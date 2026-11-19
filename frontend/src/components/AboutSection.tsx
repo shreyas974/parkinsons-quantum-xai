@@ -2,7 +2,7 @@ export function AboutSection() {
   return (
     <section className="about" id="about" aria-labelledby="about-h">
       <div className="section-head" data-reveal>
-        <p className="eyebrow">05 · About</p>
+        <p className="eyebrow">06 · About</p>
         <h2 id="about-h">What this is, and what it isn’t</h2>
       </div>
       <div className="about-grid" data-reveal-stagger>
@@ -19,9 +19,9 @@ export function AboutSection() {
           <h3>Honest limits</h3>
           <ul>
             <li>Simulated quantum circuits on a normal computer. No quantum advantage is claimed.</li>
-            <li>Small data: 31 voice participants (8 healthy) and 102 spirals.</li>
-            <li>Voice and spirals come from different people and are paired by label for the experiment.</li>
-            <li>Not a medical device. It cannot diagnose or rule out Parkinson’s.</li>
+            <li>Small data: 195 voice recordings with 32 subject IDs (8 healthy) and 102 spirals.</li>
+            <li>Voice and spirals come from different people and were paired by their known labels for the experiment.</li>
+            <li>Research only: not a medical device, and clinical use is outside the study’s scope. <a href="#research">See the results and limits</a>.</li>
           </ul>
         </article>
         <article className="glass" data-tilt>

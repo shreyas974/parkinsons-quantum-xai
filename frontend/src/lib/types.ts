@@ -49,6 +49,7 @@ export interface VoiceSample {
 }
 
 export interface ResultRow {
+  experiment: string;
   input: string;
   model: string;
   label: string;

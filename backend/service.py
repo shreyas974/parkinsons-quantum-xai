@@ -24,8 +24,11 @@ import pandas as pd
 from PIL import Image, UnidentifiedImageError
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))  # the qpd package, without needing `pip install -e .`
+# The qpd package must be the same code that built the bundle. QPD_SRC points at another checkout's src/
+# (for example the research branch) until both branches are merged; otherwise this repo's src/ is used.
+QPD_SRC = Path(os.environ.get("QPD_SRC", ROOT / "src"))
+if str(QPD_SRC) not in sys.path:
+    sys.path.insert(0, str(QPD_SRC))
 
 BUNDLE_PATH = Path(os.environ.get("QPD_BUNDLE", ROOT / "results" / "model_bundle.joblib"))
 RESULTS_PATH = Path(os.environ.get("QPD_RESULTS", ROOT / "results" / "results.csv"))
@@ -151,6 +154,7 @@ class Predictor:
         self.bundle_path = Path(bundle_path)
         self.bundle: dict | None = None
         self.reason = ""
+        self.broken: dict[str, str] = {}
         self._lock = threading.Lock()  # one heavy prediction at a time; simulators are not thread-safe
         if bundle is not None:
             self._accept(bundle)
@@ -161,7 +165,24 @@ class Predictor:
         missing = {"reducer", "models", "feature_names", "voice_columns", "background"} - set(bundle)
         if missing:
             raise ValueError(f"the bundle is missing {', '.join(sorted(missing))}")
-        self.bundle, self.reason = bundle, ""
+        # Run every model once on the stored background rows: a model whose code no longer matches the
+        # qpd package (for example an older checkout) is hidden here instead of failing mid-request.
+        background = np.asarray(bundle["background"], dtype=float)
+        self.broken = {}
+        for name, model in bundle["models"].items():
+            try:
+                p = np.asarray(model.predict_proba(background[:2]), dtype=float)
+                if p.shape != (2, 2) or not np.all(np.isfinite(p)):
+                    raise ValueError(f"unexpected output shape {p.shape}")
+            except Exception as e:
+                self.broken[name] = f"{type(e).__name__}: {e}"
+        if len(self.broken) == len(bundle["models"]):
+            raise ValueError("no model in the bundle could run: " + "; ".join(f"{k} ({v})" for k, v in self.broken.items()))
+        self.bundle = bundle
+        self.reason = (
+            "Unavailable with the installed qpd code: " + ", ".join(sorted(self.broken)) + ". Set QPD_SRC to the "
+            "checkout that built the bundle." if self.broken else ""
+        )
 
     def reload(self) -> None:
         if not self.bundle_path.exists():
@@ -186,7 +207,12 @@ class Predictor:
         return list(self.bundle["voice_columns"]) if self.bundle else list(UCI_VOICE_COLUMNS)
 
     def model_ids(self) -> list[str]:
-        return list(self.bundle["models"]) if self.bundle else list(DEMO_MODELS)
+        if not self.bundle:
+            return list(DEMO_MODELS)
+        # Quantum models first, in the order the research compares them.
+        order = {m: i for i, m in enumerate(["vqc", "qsvm", "rf", "lr"])}
+        ids = [m for m in self.bundle["models"] if m not in self.broken]
+        return sorted(ids, key=lambda m: order.get(m, len(order)))
 
     def models(self) -> list[dict]:
         metrics = (self.bundle or {}).get("metrics") or {}
@@ -198,6 +224,8 @@ class Predictor:
 
     def predict(self, voice: np.ndarray, image: Image.Image, model_id: str) -> dict:
         t0 = time.perf_counter()
+        if model_id in self.broken:
+            raise InputError(f"The {model_info(model_id)[0]} can't run with the installed code. Choose another model.")
         if model_id not in self.model_ids():
             raise InputError(f"Unknown model {model_id!r}. Choose one of: {', '.join(self.model_ids())}.")
         if self.demo:
@@ -229,7 +257,9 @@ class Predictor:
             "contributions": contributions, "angles": [float(np.clip(a, 0, np.pi)) for a in x[0]],
             "feature_names": names, "voice_share": voice_share,
             "spiral_share": (1.0 - voice_share) if total > 0 else 0.0,
-            "elapsed_ms": int((time.perf_counter() - t0) * 1000), "note": "",
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            "note": "This model was trained on the full research data, so this score is not a tested result. "
+                    "Tested performance is in the research results.",
         }
 
 
@@ -285,14 +315,22 @@ def results_summary(path: Path = RESULTS_PATH) -> dict:
     if df.empty or not {"input", "model"} <= set(df.columns):
         return {"available": False, "rows": [], "note": "results.csv has no rows to summarise."}
     rows = []
-    for (inp, model), d in df.groupby(["input", "model"]):
+    # The research file tags each row with its experiment (E1-E5 main runs, A1-A4 ablations). Ablations reuse
+    # model names with other settings, so they are left out here; the research infographic covers them.
+    if "experiment" in df.columns:
+        df = df[df["experiment"].astype(str).str.match(r"^E\d+$")]
+        if df.empty:
+            return {"available": False, "rows": [], "note": "results.csv has no main-experiment (E1-E5) rows."}
+    keys = ["experiment", "input", "model"] if "experiment" in df.columns else ["input", "model"]
+    for key, d in df.groupby(keys):
+        exp, inp, model = key if len(keys) == 3 else ("", *key)
         label, kind = model_info(str(model))
-        row = {"input": str(inp), "model": str(model), "label": label, "kind": kind, "folds": int(len(d)),
-               "seeds": int(d["seed"].nunique()) if "seed" in d else None}
+        row = {"experiment": str(exp), "input": str(inp), "model": str(model), "label": label, "kind": kind,
+               "folds": int(len(d)), "seeds": int(d["seed"].nunique()) if "seed" in d else None}
         for m in ["balanced_accuracy", "sensitivity", "specificity", "f1", "auc", "train_time_s"]:
             row[m] = _finite(d[m].mean()) if m in d else None
         row["balanced_accuracy_std"] = _finite(d["balanced_accuracy"].std()) if "balanced_accuracy" in d else None
         rows.append(row)
-    rows.sort(key=lambda r: (r["input"], -(r["balanced_accuracy"] or 0)))
+    rows.sort(key=lambda r: (r["experiment"], r["input"], -(r["balanced_accuracy"] or 0)))
     return {"available": True, "rows": rows,
-            "note": "Cross-validated by person. Means over all folds and seeds in results.csv."}
+            "note": "Cross-validated by person. Mean ± SD over every seed and fold in results.csv."}

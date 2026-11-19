@@ -2,7 +2,7 @@ const LINKS = [
   ["#signals", "Signals"],
   ["#quantum", "Qubits"],
   ["#screen", "Try it"],
-  ["#results", "Results"],
+  ["#research", "Research"],
   ["#about", "About"],
 ];
 

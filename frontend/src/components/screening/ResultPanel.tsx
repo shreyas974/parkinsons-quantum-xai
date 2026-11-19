@@ -82,6 +82,11 @@ export function ResultPanel({ status, result, error, elapsed, onRetry }: Props) 
         <span className="share-spiral" style={{ flexGrow: Math.max(0.001, result.spiral_share) }}>Spiral {formatPct(result.spiral_share)}</span>
       </div>
 
+      {!result.demo && result.note && (
+        <p className="fine">
+          {result.note} <a href="#research">See the research results</a>.
+        </p>
+      )}
       <a className="btn btn-ghost btn-small qubit-link" href="#quantum">See your 8 qubits in 3D ↑</a>
       <p className="disclaimer">Research prototype. Not a medical device and not a diagnosis. Talk to a doctor about any health concern.</p>
     </div>

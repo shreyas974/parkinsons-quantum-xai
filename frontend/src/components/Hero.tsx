@@ -17,7 +17,7 @@ export function Hero() {
           <a className="btn btn-ghost" href="#signals">See how it works</a>
         </div>
         <ul className="hero-facts" aria-label="Data behind the models">
-          <li><b>195</b> voice recordings from 31 people</li>
+          <li><b>195</b> voice recordings, 32 subject IDs</li>
           <li><b>102</b> hand-drawn spirals</li>
           <li><b>8</b> simulated qubits</li>
         </ul>

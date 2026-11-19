@@ -137,6 +137,36 @@ def test_predict_with_a_bundle(monkeypatch):
     assert body["contributions"][0]["feature"] == "f0"  # the only feature the stand-in model uses
 
 
+class _Broken:
+    def predict_proba(self, X):
+        raise AttributeError("'VQC' object has no attribute 'circuit_'")
+
+
+def test_models_that_cannot_run_are_hidden_with_a_reason(monkeypatch):
+    bundle = {"reducer": _Reducer(), "models": {"vqc": _Broken(), "lr": _Model()},
+              "feature_names": [f"f{i}" for i in range(8)], "voice_columns": service.UCI_VOICE_COLUMNS,
+              "background": np.random.default_rng(0).uniform(0, np.pi, (10, 8)), "metrics": {}}
+    p = service.Predictor(bundle=bundle)
+    assert p.model_ids() == ["lr"] and "vqc" in p.reason
+    monkeypatch.setattr(main, "predictor", p)
+    r = TestClient(main.app).post("/api/predict", data={"model": "vqc", "voice_json": sample_json()},
+                                  files={"spiral": ("s.png", spiral_png(), "image/png")})
+    assert r.status_code == 422 and "can't run" in r.json()["detail"]
+
+
+def test_results_summary_keeps_main_experiments_apart(tmp_path):
+    csv_path = tmp_path / "results.csv"
+    csv_path.write_text(
+        "model,input,seed,fold,train_time_s,balanced_accuracy,sensitivity,specificity,f1,auc,experiment\n"
+        "vqc,fusion,0,0,30,0.60,0.9,0.3,0.8,0.7,E3\n"
+        "vqc,fusion,0,1,30,0.50,0.9,0.1,0.8,0.6,E3\n"
+        "vqc,fusion,0,0,30,0.99,0.9,0.9,0.9,0.9,A2\n"
+    )
+    s = service.results_summary(csv_path)
+    assert [(r["experiment"], r["model"], r["folds"]) for r in s["rows"]] == [("E3", "vqc", 2)]
+    assert abs(s["rows"][0]["balanced_accuracy"] - 0.55) < 1e-9
+
+
 def test_results_summary(monkeypatch, tmp_path):
     csv_path = tmp_path / "results.csv"
     csv_path.write_text(

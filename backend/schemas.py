@@ -52,6 +52,7 @@ class VoiceSample(BaseModel):
 
 
 class ResultRow(BaseModel):
+    experiment: str = ""
     input: str
     model: str
     label: str

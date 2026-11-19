@@ -4,6 +4,7 @@ import { Footer } from "./components/Footer";
 import { Hero } from "./components/Hero";
 import { Nav } from "./components/Nav";
 import { QuantumSection } from "./components/QuantumSection";
+import { ResearchSection } from "./components/ResearchSection";
 import { ResultsSection } from "./components/ResultsSection";
 import { SignalsSection } from "./components/SignalsSection";
 import { StaticBackdrop } from "./components/StaticBackdrop";
@@ -44,6 +45,7 @@ export default function App() {
         <SignalsSection />
         <QuantumSection />
         <ScreeningSection />
+        <ResearchSection />
         <ResultsSection />
         <AboutSection />
       </main>

@@ -78,3 +78,29 @@ For one server: `cd frontend && npm run build`, then the backend also serves the
 Without `results/model_bundle.joblib` the site runs in **demo mode**: inputs are checked, and the result is a fixed example clearly labelled as such. When Shreyas's `scripts/train_bundle.py` writes the bundle, restart the backend (or `POST /api/reload`) and the real models are used. The bundle must be built with the same `qpd` code the backend imports, so merge Shreyas's branch into `main` before the final demo.
 
 Tests: `python -m pytest backend/tests -q` and `cd frontend && npm test`. GitHub Actions runs both (`.github/workflows/webapp.yml`).
+
+## Research results section
+
+Section 04 shows the verified findings from the research branch (`shreyas/data-ml-quantum`, infographic commit `2079598`) as HTML, so they read on phones and with screen readers. The numbers live in one file, `frontend/src/lib/research.ts`. The infographic is `frontend/public/research/research-results.png`, identical to `docs/research-results.png` at that commit, plus a 1400 px WebP preview made from it. Section 05 ("Explore the runs") appears only when the server has `results/results.csv`; it lists E1–E5 and leaves the A1–A4 ablations to the infographic.
+
+## Running with the real model bundle
+
+The bundle, datasets and raw results are local, ignored artifacts. The backend finds them through environment variables, and the `qpd` code it imports must be the code that built the bundle:
+
+| Variable | Default | Points to |
+| --- | --- | --- |
+| `QPD_BUNDLE` | `results/model_bundle.joblib` | The exported bundle |
+| `QPD_RESULTS` | `results/results.csv` | Fold-level results for section 05 |
+| `QPD_SRC` | `src/` in this checkout | The `src/` folder of the checkout that built the bundle |
+| `QPD_SHAP_NSAMPLES` | `200` | SHAP samples per explanation (lower is faster) |
+
+Until the research branch is merged, this branch's own `src/qpd` is older: with it, Random Forest and Logistic Regression load, but the VQC and quantum-kernel SVM cannot rebuild their circuits. The backend now tests every model when it loads the bundle, hides any that fail, and says why in `/api/health`. Example with the research code checked out next to this one:
+
+```bash
+QPD_SRC=../parkinsons-quantum-xai/src \
+QPD_BUNDLE=../parkinsons-quantum-xai/results/model_bundle.joblib \
+QPD_RESULTS=../parkinsons-quantum-xai/results/results.csv \
+uvicorn backend.main:app --port 8000
+```
+
+Predictions from the bundle come from models trained on all the research data, so the site labels them as not tested results and links to section 04.
