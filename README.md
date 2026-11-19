@@ -38,7 +38,7 @@ python -m qpd.experiments --models lr,svm,rf,mlp,xgb,vqc,qsvm --inputs voice,spi
 streamlit run app/streamlit_app.py
 ```
 
-Results are appended to `results/results.csv`.
+Results are appended to `results/results.csv`. Use `--out` for separate ablation runs and `--loss-dir` to save VQC training loss by epoch. Choose the VQC depth with `vqc_l1` through `vqc_l4`. Use `vqc_noent` to omit CNOTs and `vqc_noise` to apply depolarizing noise on each wire after each layer with `default.mixed`. Set `--train-fraction` to subsample complete training subjects.
 
 ## Layout
 

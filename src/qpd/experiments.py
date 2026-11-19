@@ -39,18 +39,23 @@ CLASSICAL_GRIDS = {
 CLASSICAL_GRIDS["rf_full"] = CLASSICAL_GRIDS["rf"]
 
 
-def get_model(name: str, seed: int):
+def get_model(name: str, seed: int, device: str = "default.qubit", learning_rate: float = 0.05,
+              epochs: int = 60):
     quantum = {
-        "vqc": lambda: VQC(seed=seed),
-        "vqc_noent": lambda: VQC(entangle=False, seed=seed),
-        "qsvm": lambda: QuantumKernelSVM(seed=seed),
+        "vqc": {},
+        "vqc_noent": {"entangle": False},
+        "vqc_noise": {"noise": 0.01},
+        **{f"vqc_l{depth}": {"n_layers": depth} for depth in range(1, 5)},
     }
     if name in quantum:
-        return quantum[name]()
+        return VQC(seed=seed, device=device, lr=learning_rate, epochs=epochs, **quantum[name])
+    if name == "qsvm":
+        return QuantumKernelSVM(seed=seed, device=device)
     baselines = get_baselines(seed)
     baselines["rf_full"] = baselines["rf"]
     if name not in baselines:
-        raise ValueError(f"Unknown model {name!r}. Options: {sorted(baselines) + sorted(quantum)}")
+        options = sorted([*baselines, *quantum, "qsvm"])
+        raise ValueError(f"Unknown model {name!r}. Options: {options}")
     return baselines[name]
 
 
@@ -143,7 +148,27 @@ def scores(y, p):
     }
 
 
-def run_one(model_name: str, kind: str, seed: int, n_splits: int = 5) -> list[dict]:
+def subsample_people(indices, y, groups, fraction, seed):
+    if not 0 < fraction <= 1:
+        raise ValueError("Training fraction must be in (0, 1]")
+    if fraction == 1:
+        return indices
+    population = np.unique(groups[indices])
+    count = max(2, int(np.ceil(len(population) * fraction)))
+    rng = np.random.default_rng(seed)
+    for _ in range(128):
+        selected = rng.choice(population, size=count, replace=False)
+        sample = indices[np.isin(groups[indices], selected)]
+        if len(np.unique(y[sample])) == 2:
+            return sample
+    raise ValueError("Could not select a training subset with both classes")
+
+
+def run_one(
+    model_name: str, kind: str, seed: int, n_splits: int = 5, *,
+    device: str = "default.qubit", learning_rate: float = 0.05,
+    train_fraction: float = 1.0, epochs: int = 60, loss_dir: Path | None = None,
+) -> list[dict]:
     X, y, groups, reducer, _ = make_input(kind, seed, n_splits)
     if model_name == "rf_full":
         if kind != "voice":
@@ -162,8 +187,9 @@ def run_one(model_name: str, kind: str, seed: int, n_splits: int = 5) -> list[di
 
     rows = []
     for fold, (tr, te) in enumerate(split):
+        tr = subsample_people(tr, y, groups, train_fraction, seed + fold)
         transform = clone(reducer) if reducer != "passthrough" else reducer
-        pipe = Pipeline([("reduce", transform), ("model", get_model(model_name, seed))])
+        pipe = Pipeline([("reduce", transform), ("model", get_model(model_name, seed, device, learning_rate, epochs))])
         t0 = time.perf_counter()
         if model_name in CLASSICAL_GRIDS:
             fitted = GridSearchCV(
@@ -174,6 +200,14 @@ def run_one(model_name: str, kind: str, seed: int, n_splits: int = 5) -> list[di
             fitted = pipe.fit(X[tr], y[tr])
         train_time = time.perf_counter() - t0
         p = fitted.predict_proba(X[te])[:, 1]
+        if loss_dir is not None and model_name.startswith("vqc"):
+            loss_dir.mkdir(parents=True, exist_ok=True)
+            tag = f"{model_name}-{kind}-seed{seed}-fold{fold}-{device}-lr{learning_rate}-n{train_fraction}"
+            if epochs != 60:
+                tag += f"-epochs{epochs}"
+            losses = fitted.named_steps["model"].loss_curve_
+            np.savetxt(loss_dir / f"{tag}.csv", np.column_stack([np.arange(1, len(losses) + 1), losses]),
+                       delimiter=",", header="epoch,loss", comments="")
         rows.append({"model": model_name, "input": kind, "seed": seed, "fold": fold,
                      "train_time_s": train_time, **scores(y[te], p)})
         print(f"{model_name:10s} {kind:7s} seed={seed} fold={fold} "
@@ -187,6 +221,11 @@ def main(argv=None):
     ap.add_argument("--inputs", default="voice,spiral,fusion")
     ap.add_argument("--seeds", default="0")
     ap.add_argument("--folds", type=int, default=5)
+    ap.add_argument("--device", choices=["default.qubit", "lightning.qubit"], default="default.qubit")
+    ap.add_argument("--learning-rate", type=float, default=0.05)
+    ap.add_argument("--train-fraction", type=float, default=1.0)
+    ap.add_argument("--epochs", type=int, default=60)
+    ap.add_argument("--loss-dir", type=Path)
     ap.add_argument("--out", type=Path, default=RESULTS)
     args = ap.parse_args(argv)
 
@@ -194,7 +233,10 @@ def main(argv=None):
     for seed in [int(s) for s in args.seeds.split(",")]:
         for kind in args.inputs.split(","):
             for model in args.models.split(","):
-                rows = pd.DataFrame(run_one(model, kind, seed, args.folds))
+                rows = pd.DataFrame(run_one(
+                    model, kind, seed, args.folds, device=args.device, learning_rate=args.learning_rate,
+                    train_fraction=args.train_fraction, epochs=args.epochs, loss_dir=args.loss_dir,
+                ))
                 rows.to_csv(args.out, mode="a", header=not args.out.exists(), index=False)
 
     summary = pd.read_csv(args.out).groupby(["input", "model"])[

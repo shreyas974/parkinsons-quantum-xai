@@ -38,6 +38,7 @@ class _Picklable:
 
 class VQC(_Picklable, BaseEstimator, ClassifierMixin):
     _circuit_attr = "circuit_"
+    noise = 0.0
 
     def _fitted_qubits(self):
         return getattr(self, "n_qubits_", None)
@@ -51,6 +52,7 @@ class VQC(_Picklable, BaseEstimator, ClassifierMixin):
         entangle: bool = True,
         device: str = "default.qubit",
         seed: int = 0,
+        noise: float = 0.0,
     ):
         self.n_layers = n_layers
         self.epochs = epochs
@@ -59,22 +61,26 @@ class VQC(_Picklable, BaseEstimator, ClassifierMixin):
         self.entangle = entangle
         self.device = device
         self.seed = seed
+        self.noise = noise
 
     def _build(self, n_qubits: int):
-        dev = _device(n_qubits, self.device)
+        dev = _device(n_qubits, "default.mixed" if self.noise else self.device)
         wires = range(n_qubits)
         entangle = self.entangle
 
         @qml.qnode(dev, interface="autograd")
         def circuit(weights, X):
             qml.AngleEmbedding(X, wires=wires, rotation="Y")
-            if entangle:
-                qml.StronglyEntanglingLayers(weights, wires=wires)
-            else:
-                # Same trainable rotations, no CNOTs: the "no entanglement" ablation.
-                for layer in weights:
-                    for w, (a, b, c) in zip(wires, layer):
-                        qml.Rot(a, b, c, wires=w)
+            for index, layer in enumerate(weights):
+                if entangle:
+                    distance = 1 + index % (n_qubits - 1) if n_qubits > 1 else 0
+                    qml.StronglyEntanglingLayers(pnp.expand_dims(layer, 0), wires=wires, ranges=[distance])
+                else:
+                    for wire, (a, b, c) in zip(wires, layer):
+                        qml.Rot(a, b, c, wires=wire)
+                if self.noise:
+                    for wire in wires:
+                        qml.DepolarizingChannel(self.noise, wires=wire)
             return qml.expval(qml.PauliZ(0))
 
         return circuit
@@ -98,15 +104,17 @@ class VQC(_Picklable, BaseEstimator, ClassifierMixin):
 
         def loss(w, b, Xb, yb):
             p = self._proba(w, b, Xb)
-            return -pnp.mean(yb * pnp.log(p) + (1 - yb) * pnp.log(1 - p))
+            return -pnp.mean(pnp.log(p) * yb + pnp.log1p(-p) * (1 - yb))
 
         for _ in range(self.epochs):
             order = rng.permutation(len(y))
             for start in range(0, len(y), self.batch_size):
                 idx = order[start : start + self.batch_size]
-                Xb, yb = pnp.array(X[idx], requires_grad=False), pnp.array(y[idx], requires_grad=False)
-                (weights, bias, _, _), cost = opt.step_and_cost(loss, weights, bias, Xb, yb)
-            self.loss_curve_.append(float(cost))
+                def batch_loss(w, b):
+                    return loss(w, b, X[idx], y[idx])
+
+                weights, bias = opt.step(batch_loss, weights, bias)
+            self.loss_curve_.append(float(loss(weights, bias, X, y)))
         self.weights_, self.bias_ = weights, bias
         return self
 
@@ -127,6 +135,11 @@ class VQC(_Picklable, BaseEstimator, ClassifierMixin):
 class QuantumKernelSVM(_Picklable, BaseEstimator, ClassifierMixin):
     _circuit_attr = "kernel_"
 
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        if "states_train_" not in state and self._fitted_qubits() is not None:
+            self.states_train_ = self._states(self.X_train_)
+
     def _fitted_qubits(self):
         X = getattr(self, "X_train_", None)
         return None if X is None else X.shape[1]
@@ -141,38 +154,45 @@ class QuantumKernelSVM(_Picklable, BaseEstimator, ClassifierMixin):
         dev = _device(n_qubits, self.device)
         wires = range(n_qubits)
         rng = np.random.default_rng(self.seed)
-        # One fixed (untrained) entangling layer, so the kernel is not a plain product of cosines.
         fixed = rng.uniform(0, 2 * np.pi, qml.StronglyEntanglingLayers.shape(1, n_qubits))
-        use_layer = self.entangling_layer
-
-        def feature_map(x):
-            qml.AngleEmbedding(x, wires=wires, rotation="Y")
-            if use_layer:
-                qml.StronglyEntanglingLayers(fixed, wires=wires)
+        reupload = getattr(self, "reupload_", False)
 
         @qml.qnode(dev)
-        def overlap(x1, x2):
-            feature_map(x1)
-            qml.adjoint(feature_map)(x2)
-            return qml.probs(wires=wires)
+        def state(x):
+            qml.AngleEmbedding(x, wires=wires, rotation="Y")
+            if self.entangling_layer:
+                qml.StronglyEntanglingLayers(fixed, wires=wires)
+                if reupload:
+                    qml.AngleEmbedding(x, wires=wires, rotation="Z")
+            return qml.state()
 
-        return lambda a, b: overlap(a, b)[0]
+        return state
 
-    def _gram(self, A, B):
-        return np.asarray(qml.kernels.kernel_matrix(A, B, self.kernel_), dtype=float)
+    def _states(self, X):
+        # Statevectors let the simulator reuse each feature map (Havlíček et al., 2019).
+        return np.asarray([self.kernel_(row) for row in X])
+
+    @staticmethod
+    def _gram(A, B):
+        return np.abs(A @ B.conj().T) ** 2
 
     def fit(self, X, y):
         X = np.asarray(X, dtype=float)
         self.classes_ = np.array([0, 1])
+        self.reupload_ = True
         self.kernel_ = self._build(X.shape[1])
         self.X_train_ = X
         self.svc_ = SVC(kernel="precomputed", C=self.C, probability=True, class_weight="balanced",
                         random_state=self.seed)
-        self.svc_.fit(self._gram(X, X), y)
+        self.states_train_ = self._states(X)
+        self.svc_.fit(self._gram(self.states_train_, self.states_train_), y)
         return self
 
+    def _test_gram(self, X):
+        return self._gram(self._states(np.asarray(X, dtype=float)), self.states_train_)
+
     def predict_proba(self, X):
-        return self.svc_.predict_proba(self._gram(np.asarray(X, dtype=float), self.X_train_))
+        return self.svc_.predict_proba(self._test_gram(X))
 
     def predict(self, X):
-        return self.svc_.predict(self._gram(np.asarray(X, dtype=float), self.X_train_))
+        return self.svc_.predict(self._test_gram(X))
