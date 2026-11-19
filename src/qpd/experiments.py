@@ -85,6 +85,7 @@ def _has_both_classes(y, splits):
 
 
 def person_folds(X, y, groups, seed, n_splits=5):
+    # Roberts et al. (2017) describe blocking to account for dependent observations.
     rng = np.random.default_rng(seed)
     candidate_seeds = [seed, *rng.integers(0, 2**32 - 1, size=127)]
     for split_seed in candidate_seeds:
