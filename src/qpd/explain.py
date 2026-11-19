@@ -20,6 +20,7 @@ def explain(model, X_train, X_explain, feature_names, n_background: int = 10, ns
     X_explain to 20-40 rows.
     """
     background = shap.kmeans(X_train, min(n_background, len(X_train)))
+    # Lundberg and Lee (2017) estimate additive feature contributions.
     explainer = shap.KernelExplainer(lambda X: model.predict_proba(X)[:, 1], background)
     values = explainer.shap_values(X_explain, nsamples=nsamples, silent=True)
     return shap.Explanation(values=values, base_values=np.full(len(X_explain), explainer.expected_value),
@@ -35,11 +36,14 @@ def save_figures(expl: shap.Explanation, out_dir: Path, tag: str) -> list[Path]:
         ("bar", lambda: shap.plots.bar(expl, show=False)),
         ("waterfall", lambda: shap.plots.waterfall(expl[0], show=False)),
     ]:
-        plt.figure()
+        canvas = plt.figure()
         draw()
+        figure = plt.gcf()
         p = out_dir / f"{tag}_{kind}.png"
-        plt.savefig(p, dpi=200, bbox_inches="tight")
-        plt.close("all")
+        figure.savefig(p, dpi=200, bbox_inches="tight")
+        plt.close(figure)
+        if canvas is not figure:
+            plt.close(canvas)
         paths.append(p)
     return paths
 
