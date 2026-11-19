@@ -31,4 +31,50 @@ Hosting ideas: Streamlit Community Cloud, Hugging Face Spaces, Render.
 
 ## Decision
 
-_To be filled in by Thanusri:_ chosen stack, why, and what we give up.
+**FastAPI backend + React frontend with a Three.js 3D layer.** Streamlit (`app/streamlit_app.py`) stays as the fallback.
+
+| Layer | Choice | Why |
+| --- | --- | --- |
+| API | FastAPI, Uvicorn, Pydantic | Python, so it loads the same `qpd` code and model bundle; file uploads and typed responses built in; docs at `/docs` |
+| Frontend | React 18, TypeScript, Vite | Fast to build, types catch API mistakes, splits the 3D code into a separate download |
+| 3D | three.js, React Three Fiber, drei, postprocessing (bloom) | The standard stack behind most award-winning 3D sites; declarative scenes in React |
+| Motion | GSAP ScrollTrigger, Lenis | Pinned scroll story, reveals and smooth wheel scrolling, all switched off for reduced motion |
+| Charts | Hand-written SVG | SHAP waterfall and results bars drawn to scale, values printed on every bar |
+
+What we give up: two codebases (Python and TypeScript) and a larger download than Streamlit (the 3D code is about 236 KB compressed, loaded after the text).
+
+## How the site is built
+
+One fixed 3D canvas sits behind normal, readable HTML. As you scroll, the camera flies through the scenes:
+
+1. **Hero:** a gold tremor spiral draws itself and follows the pointer.
+2. **Two signals:** a steady spiral and voice wave beside shaky ones (jitter shifts timing, shimmer changes height).
+3. **Eight qubits (pinned for two screens):** scrolling runs the circuit. Arrows start at |0⟩, tip to each feature's RY angle (encode), turn while the CNOT ring glows (entangle), then only the measured qubit stays bright (measure). After a prediction, the arrows use the real encoded angles.
+4. **Screening tool:** voice sample or CSV, spiral drawn on a pad / uploaded / synthetic example, model choice, then the score ring, SHAP waterfall and voice vs spiral share.
+5. **Results:** cross-validated scores from `results/results.csv`, once Shreyas's experiments exist.
+
+Colour follows a 60-30-10 split with four colours: navy `#0A1828` ground, turquoise `#178582` / `#3CC2BB` structure and quantum parts, gold `#E3BD72` for calls to action and pushes towards Parkinson's, off-white text.
+
+Real-world practices applied: text first and 3D loaded later; pixel ratio capped and bloom turned off when the frame rate drops; a lighter scene on phones and low-core machines; no React state updates inside the render loop; a static fallback without WebGL; reduced motion gives a still scene, no pin and no smooth scroll; 44–48 px touch targets; 3 px focus outline; motion at 150 / 250 / 400 ms with one easing curve.
+
+References read for this: [Awwwards 3D websites](https://www.awwwards.com/websites/3d/), [Utsubo, best Three.js websites 2026](https://www.utsubo.com/blog/best-threejs-websites-2026), [Hostinger, website colour schemes](https://www.hostinger.com/in/tutorials/website-color-schemes/), [claudedesignskills](https://github.com/freshtechbro/claudedesignskills) (three.js, R3F, GSAP and modern-web-design skills), [3D Web Experience Architect](https://mcpmarket.com/tools/skills/3d-web-experience-architect-5), [MindStudio, animated 3D websites](https://www.mindstudio.ai/blog/animated-3d-websites-claude-code-ai-video-generation).
+
+## How to run
+
+```bash
+# Backend (from the repo root)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r backend/requirements.txt
+uvicorn backend.main:app --reload --port 8000
+```
+
+```bash
+# Frontend, in a second terminal (opens http://localhost:5173, forwards /api to port 8000)
+cd frontend && npm install && npm run dev
+```
+
+For one server: `cd frontend && npm run build`, then the backend also serves the site at http://localhost:8000.
+
+Without `results/model_bundle.joblib` the site runs in **demo mode**: inputs are checked, and the result is a fixed example clearly labelled as such. When Shreyas's `scripts/train_bundle.py` writes the bundle, restart the backend (or `POST /api/reload`) and the real models are used. The bundle must be built with the same `qpd` code the backend imports, so merge Shreyas's branch into `main` before the final demo.
+
+Tests: `python -m pytest backend/tests -q` and `cd frontend && npm test`. GitHub Actions runs both (`.github/workflows/webapp.yml`).
