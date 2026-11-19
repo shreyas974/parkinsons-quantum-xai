@@ -34,6 +34,9 @@ python -m qpd.experiments --models lr,rf --inputs voice --seeds 0
 # Everything (slow: the quantum models are simulated)
 python -m qpd.experiments --models lr,svm,rf,mlp,xgb,vqc,qsvm --inputs voice,spiral,fusion --seeds 0,1,2
 
+# E4 late fusion using the seed-0 voice and spiral winners
+python -m qpd.experiments --models late_fusion --inputs fusion --late-voice-model mlp --late-spiral-model rf --seeds 0
+
 # Web app
 streamlit run app/streamlit_app.py
 ```

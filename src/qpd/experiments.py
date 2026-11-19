@@ -164,6 +164,56 @@ def subsample_people(indices, y, groups, fraction, seed):
     raise ValueError("Could not select a training subset with both classes")
 
 
+def fit_fold_model(model_name, reducer, X, y, groups, seed, **model_options):
+    transform = reducer if reducer == "passthrough" else clone(reducer)
+    pipeline = Pipeline([("reduce", transform), ("model", get_model(model_name, seed, **model_options))])
+    if model_name in CLASSICAL_GRIDS:
+        return GridSearchCV(
+            pipeline, CLASSICAL_GRIDS[model_name], cv=TrainingGroupKFold(n_splits=3),
+            scoring="balanced_accuracy", error_score="raise",
+        ).fit(X, y, groups=groups)
+    return pipeline.fit(X, y)
+
+
+def fold_membership(splits, n_rows):
+    membership = np.empty(n_rows, dtype=int)
+    for fold, (_, test) in enumerate(splits):
+        membership[test] = fold
+    return membership
+
+
+def average_probabilities(voice, spiral):
+    return (np.asarray(voice) + np.asarray(spiral)) / 2
+
+
+def run_late_fusion(voice_model, spiral_model, seed, n_splits=5):
+    if n_splits < 4:
+        raise ValueError("Tuned late fusion requires at least four outer folds")
+    X, y, groups, reducer, _ = make_input("fusion", seed, n_splits)
+    voice, spiral = X[:, :reducer.n_voice_cols], X[:, reducer.n_voice_cols:]
+    splits = person_folds(X, y, groups, seed, n_splits)
+    membership = fold_membership(splits, len(y))
+    rows = []
+    for fold, (train, test) in enumerate(splits):
+        _, distinct = np.unique(spiral[train], axis=0, return_index=True)
+        drawings = train[np.sort(distinct)]
+        start = time.perf_counter()
+        voice_fit = fit_fold_model(voice_model, voice_reducer(4, seed), voice[train], y[train], groups[train], seed)
+        spiral_fit = fit_fold_model(
+            spiral_model, spiral_reducer(4, seed), spiral[drawings], y[drawings], membership[drawings], seed,
+        )
+        elapsed = time.perf_counter() - start
+        probability = average_probabilities(
+            voice_fit.predict_proba(voice[test])[:, 1], spiral_fit.predict_proba(spiral[test])[:, 1],
+        )
+        row = {"model": "late_fusion", "input": "fusion", "seed": seed, "fold": fold,
+               "train_time_s": elapsed, **scores(y[test], probability)}
+        rows.append(row)
+        print(f"late_fusion ({voice_model}+{spiral_model}) seed={seed} fold={fold} "
+              f"bal_acc={row['balanced_accuracy']:.3f} auc={row['auc']:.3f}")
+    return rows
+
+
 def run_one(
     model_name: str, kind: str, seed: int, n_splits: int = 5, *,
     device: str = "default.qubit", learning_rate: float = 0.05,
@@ -181,23 +231,14 @@ def run_one(
         if n_splits < 4:
             raise ValueError("Tuned fusion requires at least four outer folds")
         # Each outer partition contains disjoint voice subjects and spiral filename groups.
-        tuning_groups = np.empty(len(groups), dtype=int)
-        for fold, (_, test) in enumerate(split):
-            tuning_groups[test] = fold
+        tuning_groups = fold_membership(split, len(groups))
 
     rows = []
     for fold, (tr, te) in enumerate(split):
         tr = subsample_people(tr, y, groups, train_fraction, seed + fold)
-        transform = clone(reducer) if reducer != "passthrough" else reducer
-        pipe = Pipeline([("reduce", transform), ("model", get_model(model_name, seed, device, learning_rate, epochs))])
         t0 = time.perf_counter()
-        if model_name in CLASSICAL_GRIDS:
-            fitted = GridSearchCV(
-                pipe, CLASSICAL_GRIDS[model_name], cv=TrainingGroupKFold(n_splits=3),
-                scoring="balanced_accuracy", error_score="raise",
-            ).fit(X[tr], y[tr], groups=tuning_groups[tr])
-        else:
-            fitted = pipe.fit(X[tr], y[tr])
+        fitted = fit_fold_model(model_name, reducer, X[tr], y[tr], tuning_groups[tr], seed,
+                                device=device, learning_rate=learning_rate, epochs=epochs)
         train_time = time.perf_counter() - t0
         p = fitted.predict_proba(X[te])[:, 1]
         if loss_dir is not None and model_name.startswith("vqc"):
@@ -226,6 +267,8 @@ def main(argv=None):
     ap.add_argument("--train-fraction", type=float, default=1.0)
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--loss-dir", type=Path)
+    ap.add_argument("--late-voice-model", default="mlp")
+    ap.add_argument("--late-spiral-model", default="rf")
     ap.add_argument("--out", type=Path, default=RESULTS)
     args = ap.parse_args(argv)
 
@@ -233,11 +276,16 @@ def main(argv=None):
     for seed in [int(s) for s in args.seeds.split(",")]:
         for kind in args.inputs.split(","):
             for model in args.models.split(","):
-                rows = pd.DataFrame(run_one(
-                    model, kind, seed, args.folds, device=args.device, learning_rate=args.learning_rate,
-                    train_fraction=args.train_fraction, epochs=args.epochs, loss_dir=args.loss_dir,
-                ))
-                rows.to_csv(args.out, mode="a", header=not args.out.exists(), index=False)
+                if model == "late_fusion":
+                    if kind != "fusion":
+                        raise ValueError("late_fusion requires --inputs fusion")
+                    records = run_late_fusion(args.late_voice_model, args.late_spiral_model, seed, args.folds)
+                else:
+                    records = run_one(
+                        model, kind, seed, args.folds, device=args.device, learning_rate=args.learning_rate,
+                        train_fraction=args.train_fraction, epochs=args.epochs, loss_dir=args.loss_dir,
+                    )
+                pd.DataFrame(records).to_csv(args.out, mode="a", header=not args.out.exists(), index=False)
 
     summary = pd.read_csv(args.out).groupby(["input", "model"])[
         ["balanced_accuracy", "sensitivity", "specificity", "f1", "auc", "train_time_s"]
