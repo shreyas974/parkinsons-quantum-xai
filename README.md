@@ -4,6 +4,17 @@ Predicts Parkinson's disease from **voice features** and **hand-drawn spirals**,
 
 > Research prototype. Not a medical device and not a diagnosis.
 
+## Research results at a glance
+
+[Open the full-resolution infographic](docs/research-results.png) to see the main comparisons, ablations, simulator timings, and held-out SHAP figures.
+
+<details>
+<summary>View the research infographic</summary>
+
+[![Research infographic with experiment results and held-out explanations](docs/research-results.png)](docs/research-results.png)
+
+</details>
+
 ## Developers
 
 | Who | Owns | Branch |
