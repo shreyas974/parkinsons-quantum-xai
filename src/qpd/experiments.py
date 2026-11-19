@@ -29,6 +29,10 @@ from .features import FusionReducer, spiral_reducer, voice_reducer
 from .quantum import VQC, QuantumKernelSVM
 
 RESULTS = ROOT / "results" / "results.csv"
+FOLD_COLUMNS = (
+    "model", "input", "seed", "fold", "train_time_s", "balanced_accuracy",
+    "sensitivity", "specificity", "f1", "auc",
+)
 CLASSICAL_GRIDS = {
     "lr": {"model__C": [0.1, 1.0, 10.0]},
     "svm": {"model__C": [0.1, 1.0, 10.0], "model__gamma": ["scale", "auto"]},
@@ -272,6 +276,8 @@ def main(argv=None):
     ap.add_argument("--out", type=Path, default=RESULTS)
     args = ap.parse_args(argv)
 
+    if args.out.exists() and tuple(pd.read_csv(args.out, nrows=0).columns) != FOLD_COLUMNS:
+        ap.error(f"{args.out} has a different schema. Choose a separate --out file.")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     for seed in [int(s) for s in args.seeds.split(",")]:
         for kind in args.inputs.split(","):
@@ -285,7 +291,7 @@ def main(argv=None):
                         model, kind, seed, args.folds, device=args.device, learning_rate=args.learning_rate,
                         train_fraction=args.train_fraction, epochs=args.epochs, loss_dir=args.loss_dir,
                     )
-                pd.DataFrame(records).to_csv(args.out, mode="a", header=not args.out.exists(), index=False)
+                pd.DataFrame(records, columns=FOLD_COLUMNS).to_csv(args.out, mode="a", header=not args.out.exists(), index=False)
 
     summary = pd.read_csv(args.out).groupby(["input", "model"])[
         ["balanced_accuracy", "sensitivity", "specificity", "f1", "auc", "train_time_s"]

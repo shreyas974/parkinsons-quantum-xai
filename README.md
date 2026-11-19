@@ -29,19 +29,19 @@ The spiral images need a Kaggle login; see [data/README.md](data/README.md).
 
 ```bash
 # One quick check: classical baselines on voice only
-python -m qpd.experiments --models lr,rf --inputs voice --seeds 0
+python -m qpd.experiments --models lr,rf --inputs voice --seeds 0 --out results/quick.csv
 
 # Everything (slow: the quantum models are simulated)
-python -m qpd.experiments --models lr,svm,rf,mlp,xgb,vqc,qsvm --inputs voice,spiral,fusion --seeds 0,1,2
+nohup python -u scripts/run_full_experiments.py --jobs 4 > results/run.log 2>&1 &
 
 # E4 late fusion using the seed-0 voice and spiral winners
-python -m qpd.experiments --models late_fusion --inputs fusion --late-voice-model mlp --late-spiral-model rf --seeds 0
+python -m qpd.experiments --models late_fusion --inputs fusion --late-voice-model mlp --late-spiral-model rf --seeds 0 --out results/late_check.csv
 
 # Web app
 streamlit run app/streamlit_app.py
 ```
 
-Results are appended to `results/results.csv`. Use `--out` for separate ablation runs and `--loss-dir` to save VQC training loss by epoch. Choose the VQC depth with `vqc_l1` through `vqc_l4`. Use `vqc_noent` to omit CNOTs and `vqc_noise` to apply depolarizing noise on each wire after each layer with `default.mixed`. Set `--train-fraction` to subsample complete training subjects.
+The full runner writes `results/results.csv`, `results/summary.csv`, and `results/wilcoxon.csv` after validating all runs. Use `--out` for individual checks and `--loss-dir` to save VQC training loss by epoch. Choose the VQC depth with `vqc_l1` through `vqc_l4`. Use `vqc_noent` to omit CNOTs and `vqc_noise` to apply depolarizing noise on each wire after each layer with `default.mixed`. Set `--train-fraction` to subsample complete training subjects.
 
 ## Layout
 
