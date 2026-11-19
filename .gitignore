@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Data: downloaded locally, never committed (Kaggle licence, file size)
+data/voice/*
+data/spiral/*
+!data/voice/.gitkeep
+!data/spiral/.gitkeep
+
+# Outputs
+results/*
+!results/.gitkeep
+*.joblib
+
+# Team-only pages kept outside the repo
+team-board.html
+team-slides.html
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
