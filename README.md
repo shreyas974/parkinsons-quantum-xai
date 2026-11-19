@@ -61,7 +61,9 @@ docs/
 
 ## Rules that keep results honest
 
-- Split by **person**, never by recording (`StratifiedGroupKFold`).
+- Group voice folds by the subject ID in `name`. Group spiral-only folds by the repeated V-number in the image filename.
+- Voice recordings and spiral drawings come from different people. Fusion pairs them using their known labels, with a disjoint pool of images per voice subject. Fusion experiments keep each spiral filename prefix within one outer fold and tune on those disjoint partitions. These scores describe an experiment with label-matched inputs.
+- Tune classical hyperparameters on grouped splits inside each training fold. `rf_full` uses all voice features as the E5 reference.
 - Fit scaling, feature selection and PCA **inside** each training fold.
 - Report balanced accuracy, sensitivity, specificity, F1 and AUC.
 - Results come from a simulator; we do not claim quantum advantage.

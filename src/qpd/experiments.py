@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import linear_sum_assignment
 from sklearn.base import clone
 from sklearn.metrics import (
     balanced_accuracy_score,
@@ -19,15 +20,23 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, GroupKFold, StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
 
 from .baselines import get_baselines
-from .data import ROOT, load_fused, load_spiral_features, load_voice
+from .data import ROOT, Dataset, load_spiral_features, load_voice, pair_by_label
 from .features import FusionReducer, spiral_reducer, voice_reducer
 from .quantum import VQC, QuantumKernelSVM
 
 RESULTS = ROOT / "results" / "results.csv"
+CLASSICAL_GRIDS = {
+    "lr": {"model__C": [0.1, 1.0, 10.0]},
+    "svm": {"model__C": [0.1, 1.0, 10.0], "model__gamma": ["scale", "auto"]},
+    "rf": {"model__max_depth": [None, 5], "model__min_samples_leaf": [1, 3]},
+    "mlp": {"model__alpha": [0.001, 0.01], "model__hidden_layer_sizes": [(16,), (32, 16)]},
+    "xgb": {"model__max_depth": [2, 3], "model__learning_rate": [0.03, 0.1]},
+}
+CLASSICAL_GRIDS["rf_full"] = CLASSICAL_GRIDS["rf"]
 
 
 def get_model(name: str, seed: int):
@@ -39,23 +48,88 @@ def get_model(name: str, seed: int):
     if name in quantum:
         return quantum[name]()
     baselines = get_baselines(seed)
+    baselines["rf_full"] = baselines["rf"]
     if name not in baselines:
         raise ValueError(f"Unknown model {name!r}. Options: {sorted(baselines) + sorted(quantum)}")
     return baselines[name]
 
 
-def make_input(kind: str, seed: int):
+def make_input(kind: str, seed: int, n_splits: int = 5):
     """Data, groups and the in-fold reducer for one input setting."""
     if kind == "voice":
         d = load_voice()
         return d.X, d.y, d.groups, voice_reducer(4, seed), StratifiedGroupKFold
     if kind == "spiral":
         d = load_spiral_features()
-        return d.X, d.y, None, spiral_reducer(4, seed), StratifiedKFold
+        return d.X, d.y, d.groups, spiral_reducer(4, seed), StratifiedGroupKFold
     if kind == "fusion":
-        d, n_voice_cols = load_fused(seed)
-        return d.X, d.y, d.groups, FusionReducer(n_voice_cols=n_voice_cols, seed=seed), StratifiedGroupKFold
+        voice = load_voice()
+        voice_folds = person_folds(voice.X, voice.y, voice.groups, seed, n_splits)
+        d = pair_outer_folds(voice, load_spiral_features(), voice_folds, seed)
+        reducer = FusionReducer(n_voice_cols=voice.X.shape[1], seed=seed)
+        return d.X, d.y, d.groups, reducer, StratifiedGroupKFold
     raise ValueError(f"Unknown input {kind!r}: use voice, spiral or fusion")
+
+
+def _has_both_classes(y, splits):
+    return all(len(np.unique(y[part])) == 2 for split in splits for part in split)
+
+
+def person_folds(X, y, groups, seed, n_splits=5):
+    rng = np.random.default_rng(seed)
+    candidate_seeds = [seed, *rng.integers(0, 2**32 - 1, size=127)]
+    for split_seed in candidate_seeds:
+        cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=int(split_seed))
+        splits = list(cv.split(X, y, groups))
+        if _has_both_classes(y, splits):
+            return splits
+    raise ValueError("Could not find person-wise outer folds containing both classes")
+
+
+def _subset(dataset, index):
+    return Dataset(dataset.X[index], dataset.y[index], dataset.groups[index], dataset.feature_names)
+
+
+def pair_outer_folds(voice, spiral, voice_folds, seed):
+    """Allocate whole spiral filename groups to voice folds before pairing."""
+    voice_tests = [test for _, test in voice_folds]
+    people = np.array([
+        [len(np.unique(voice.groups[test][voice.y[test] == label])) for label in (0, 1)]
+        for test in voice_tests
+    ])
+    rng = np.random.default_rng(seed)
+    candidate_seeds = [seed, *rng.integers(0, 2**32 - 1, size=127)]
+    for split_seed in candidate_seeds:
+        cv = StratifiedGroupKFold(len(voice_folds), shuffle=True, random_state=int(split_seed))
+        spiral_tests = [test for _, test in cv.split(spiral.X, spiral.y, spiral.groups)]
+        counts = np.array([np.bincount(spiral.y[test], minlength=2) for test in spiral_tests])
+        feasible = (counts[None, :, :] >= people[:, None, :]).all(axis=2)
+        _, assignment = linear_sum_assignment(~feasible)
+        if feasible[np.arange(len(voice_tests)), assignment].all():
+            break
+    else:
+        raise ValueError("Not enough spiral images in disjoint filename groups for the voice folds")
+
+    X = np.empty((len(voice.y), voice.X.shape[1] + spiral.X.shape[1]), dtype=float)
+    for rows, spiral_fold in zip(voice_tests, assignment):
+        paired = pair_by_label(_subset(voice, rows), _subset(spiral, spiral_tests[spiral_fold]), seed)
+        X[rows] = paired.X
+    return Dataset(X, voice.y, voice.groups, voice.feature_names + spiral.feature_names)
+
+
+class TrainingGroupKFold(GroupKFold):
+    """Retry group ordering when an inner split omits a class."""
+
+    def split(self, X, y=None, groups=None):
+        _, codes = np.unique(groups, return_inverse=True)
+        rng = np.random.default_rng(0)
+        for _ in range(128):
+            splits = list(super().split(X, y, codes))
+            if _has_both_classes(y, splits):
+                yield from splits
+                return
+            codes = rng.permutation(codes.max() + 1)[codes]
+        raise ValueError("Could not find person-wise inner folds containing both classes")
 
 
 def scores(y, p):
@@ -70,17 +144,38 @@ def scores(y, p):
 
 
 def run_one(model_name: str, kind: str, seed: int, n_splits: int = 5) -> list[dict]:
-    X, y, groups, reducer, splitter = make_input(kind, seed)
-    cv = splitter(n_splits=n_splits, shuffle=True, random_state=seed)
-    split = cv.split(X, y, groups) if groups is not None else cv.split(X, y)
+    X, y, groups, reducer, _ = make_input(kind, seed, n_splits)
+    if model_name == "rf_full":
+        if kind != "voice":
+            raise ValueError("rf_full is the full-feature voice reference")
+        reducer = "passthrough"
+
+    split = person_folds(X, y, groups, seed, n_splits)
+    tuning_groups = groups
+    if kind == "fusion" and model_name in CLASSICAL_GRIDS:
+        if n_splits < 4:
+            raise ValueError("Tuned fusion requires at least four outer folds")
+        # Each outer partition contains disjoint voice subjects and spiral filename groups.
+        tuning_groups = np.empty(len(groups), dtype=int)
+        for fold, (_, test) in enumerate(split):
+            tuning_groups[test] = fold
+
     rows = []
     for fold, (tr, te) in enumerate(split):
-        pipe = Pipeline([("reduce", clone(reducer)), ("model", get_model(model_name, seed))])
+        transform = clone(reducer) if reducer != "passthrough" else reducer
+        pipe = Pipeline([("reduce", transform), ("model", get_model(model_name, seed))])
         t0 = time.perf_counter()
-        pipe.fit(X[tr], y[tr])
-        p = pipe.predict_proba(X[te])[:, 1]
+        if model_name in CLASSICAL_GRIDS:
+            fitted = GridSearchCV(
+                pipe, CLASSICAL_GRIDS[model_name], cv=TrainingGroupKFold(n_splits=3),
+                scoring="balanced_accuracy", error_score="raise",
+            ).fit(X[tr], y[tr], groups=tuning_groups[tr])
+        else:
+            fitted = pipe.fit(X[tr], y[tr])
+        train_time = time.perf_counter() - t0
+        p = fitted.predict_proba(X[te])[:, 1]
         rows.append({"model": model_name, "input": kind, "seed": seed, "fold": fold,
-                     "train_time_s": time.perf_counter() - t0, **scores(y[te], p)})
+                     "train_time_s": train_time, **scores(y[te], p)})
         print(f"{model_name:10s} {kind:7s} seed={seed} fold={fold} "
               f"bal_acc={rows[-1]['balanced_accuracy']:.3f} auc={rows[-1]['auc']:.3f}")
     return rows

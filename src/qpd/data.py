@@ -10,6 +10,7 @@ spiral never appears in both the training and the test fold.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,13 +71,21 @@ def list_spirals(root: Path = SPIRAL_DIR) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def spiral_group(path: Path) -> str:
+    # The Kaggle filenames repeat the V-number across drawings.
+    match = re.match(r"^(V\d+)(?:HE|PE)\d+$", path.stem, re.IGNORECASE)
+    if match is None:
+        raise ValueError(f"Cannot determine spiral group from {path.name}")
+    return match[1].upper()
+
+
 def load_spiral_features(root: Path = SPIRAL_DIR) -> Dataset:
     from .features import hog_features
 
     table = list_spirals(root)
     X = np.stack([hog_features(p) for p in table["path"]])
     y = table["label"].to_numpy(dtype=int)
-    groups = np.array([f"img{i}" for i in range(len(y))])
+    groups = np.array([spiral_group(Path(path)) for path in table["path"]])
     return Dataset(X, y, groups, [f"hog_{i}" for i in range(X.shape[1])])
 
 
@@ -93,13 +102,14 @@ def pair_by_label(voice: Dataset, spiral: Dataset, seed: int = 0) -> Dataset:
     for label in (0, 1):
         subjects = np.unique(voice.groups[voice.y == label])
         images = rng.permutation(np.flatnonzero(spiral.y == label))
-        if len(images) == 0:
-            raise ValueError(f"No spiral images with label {label}")
-        pools = np.array_split(images, len(subjects)) if len(images) >= len(subjects) else None
+        if len(subjects) == 0:
+            continue
+        if len(images) < len(subjects):
+            raise ValueError(f"Not enough spiral images for disjoint subject pools for label {label}")
+        pools = np.array_split(images, len(subjects))
         for k, subj in enumerate(rng.permutation(subjects)):
             rows = np.flatnonzero(voice.groups == subj)
-            # Fewer images than subjects: reuse is unavoidable, so draw from all of them.
-            pool = pools[k] if pools is not None else images
+            pool = pools[k]
             spiral_for_row[rows] = rng.choice(pool, size=len(rows), replace=len(pool) < len(rows))
 
     X = np.hstack([voice_X, spiral_X[spiral_for_row]])
