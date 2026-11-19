@@ -61,3 +61,17 @@ def test_vqc_trains_on_tiny_data():
     p = model.predict_proba(X)
     assert p.shape == (24, 2)
     assert np.allclose(p.sum(1), 1)
+
+
+def test_quantum_models_survive_save_and_load():
+    pytest.importorskip("pennylane")
+    import pickle
+
+    from qpd.quantum import VQC, QuantumKernelSVM
+
+    rng = np.random.default_rng(1)
+    X = rng.uniform(0, np.pi, size=(16, 3))
+    y = np.array([0, 1] * 8)
+    for model in (VQC(n_layers=1, epochs=2, batch_size=8).fit(X, y), QuantumKernelSVM().fit(X, y)):
+        loaded = pickle.loads(pickle.dumps(model))
+        assert np.allclose(loaded.predict_proba(X), model.predict_proba(X))

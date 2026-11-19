@@ -19,7 +19,29 @@ def _device(n_qubits: int, name: str):
     return qml.device(name, wires=n_qubits)
 
 
-class VQC(BaseEstimator, ClassifierMixin):
+class _Picklable:
+    """PennyLane circuits can't be pickled: drop them when saving, rebuild on load."""
+
+    _circuit_attr = ""
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop(self._circuit_attr, None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        n = self._fitted_qubits()
+        if n is not None:
+            setattr(self, self._circuit_attr, self._build(n))
+
+
+class VQC(_Picklable, BaseEstimator, ClassifierMixin):
+    _circuit_attr = "circuit_"
+
+    def _fitted_qubits(self):
+        return getattr(self, "n_qubits_", None)
+
     def __init__(
         self,
         n_layers: int = 3,
@@ -102,7 +124,13 @@ class VQC(BaseEstimator, ClassifierMixin):
         return qml.draw_mpl(self.circuit_)(self.weights_, x)
 
 
-class QuantumKernelSVM(BaseEstimator, ClassifierMixin):
+class QuantumKernelSVM(_Picklable, BaseEstimator, ClassifierMixin):
+    _circuit_attr = "kernel_"
+
+    def _fitted_qubits(self):
+        X = getattr(self, "X_train_", None)
+        return None if X is None else X.shape[1]
+
     def __init__(self, C: float = 1.0, entangling_layer: bool = True, device: str = "default.qubit", seed: int = 0):
         self.C = C
         self.entangling_layer = entangling_layer

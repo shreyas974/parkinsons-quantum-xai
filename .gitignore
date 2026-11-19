@@ -12,10 +12,12 @@ data/voice/*
 data/spiral/*
 !data/voice/.gitkeep
 !data/spiral/.gitkeep
+data/raw/
 
 # Outputs
 results/*
 !results/.gitkeep
+figures/raw/
 *.joblib
 
 # Team-only pages kept outside the repo
