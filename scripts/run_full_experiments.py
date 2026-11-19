@@ -105,7 +105,8 @@ def test_best_fusion(results):
     classical = average.loc[list(CLASSICAL)].idxmax()
     quantum = average.loc[["qsvm", "vqc"]].idxmax()
     pairs = fusion.pivot(index=["seed", "fold"], columns="model", values="balanced_accuracy")
-    delta = pairs[quantum] - pairs[classical]
+    # Round differences so subtraction artifacts cannot break ties in the signed ranks.
+    delta = (pairs[quantum] - pairs[classical]).round(12)
     if len(delta) != 15 or delta.isna().any():
         raise ValueError("Expected 15 complete paired fusion scores")
     if delta.eq(0).all():
