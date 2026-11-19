@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.decomposition import PCA
@@ -32,7 +34,7 @@ def angle_scaler() -> MinMaxScaler:
 def voice_reducer(k: int = 4, seed: int = 0):
     return make_pipeline(
         StandardScaler(),
-        SelectKBest(lambda X, y: mutual_info_classif(X, y, random_state=seed), k=k),
+        SelectKBest(partial(mutual_info_classif, random_state=seed), k=k),
         angle_scaler(),
     )
 
